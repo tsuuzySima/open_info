@@ -1,0 +1,48 @@
+# 既存 material を残したまま各スロットを置き換える
+for mat in obj.data.materials:
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    # 既存ノード除去（必要なら）
+    for n in list(nodes):
+        if n.type not in {'OUTPUT_MATERIAL'}:
+            nodes.remove(n)
+    bsdf = nodes.get("Principled BSDF") or nodes.new("ShaderNodeBsdfPrincipled")
+
+    # ファイル名をマテリアル名で分岐
+    # ── texture_a → diff/rough/nor を貼る …のようにマッピング
+    if mat.name == "texture_a":
+        base_file = "rusted_shutter_diff_4k.jpg"
+        rough_file = "rusted_shutter_rough_4k.exr"
+        nor_file  = "rusted_shutter_nor_gl_4k.exr"
+    elif mat.name == "texture_b":
+        ...
+    elif mat.name == "texture_c":
+        ...
+    else:
+        continue  # 想定外はスキップ
+
+    # 色空間設定＆リンク
+    def tex(path, is_srgb):
+        img = bpy.data.images.load(os.path.join(TEX_DIR, path))
+        img.colorspace_settings.name = "sRGB" if is_srgb else "Non-Color"
+        node = nodes.new("ShaderNodeTexImage")
+        node.image = img
+        return node
+
+    col  = tex(base_file,  True)
+    rough= tex(rough_file, False)
+    norm = tex(nor_file,  False)
+
+    nrm_node = nodes.new("ShaderNodeNormalMap")
+    links.new(col.outputs[0],  bsdf.inputs["Base Color"])
+    links.new(rough.outputs[0],bsdf.inputs["Roughness"])
+    links.new(norm.outputs[0], nrm_node.inputs["Color"])
+    links.new(nrm_node.outputs[0], bsdf.inputs["Normal"])
+
+# そのまま glTF エクスポート
+bpy.ops.export_scene.gltf(
+    filepath=OUT_GLTF,
+    export_format='GLB',
+    export_selected=True,
+    export_apply=True
+)

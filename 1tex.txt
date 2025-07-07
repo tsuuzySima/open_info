@@ -1,0 +1,65 @@
+# Blender 4.x  / Python スクリプト
+# OBJ に「rusted shutter」4K テクスチャを貼り、GLB 保存
+# ------------------------------------------------------------
+# 参考: import OBJ:contentReference[oaicite:0]{index=0}, ノードで色空間変更:contentReference[oaicite:1]{index=1},
+# glTF エクスポート API:contentReference[oaicite:2]{index=2}  :contentReference[oaicite:3]{index=3}
+
+import bpy, os, sys
+
+BASE_DIR = os.path.dirname(bpy.data.filepath) or os.getcwd()
+OBJ_PATH = os.path.join(BASE_DIR, "test.obj")
+TEX_DIR  = BASE_DIR
+OUT_GLTF = os.path.join(BASE_DIR, "test_dirty.glb")
+
+# ---------- 1. シーン初期化 ----------
+bpy.ops.wm.read_factory_settings(use_empty=True)
+scene = bpy.context.scene
+
+# ---------- 2. OBJ インポート ----------
+bpy.ops.import_scene.obj(filepath=OBJ_PATH)  # Blender 4.x も有効:contentReference[oaicite:4]{index=4}
+obj = bpy.context.selected_objects[0]
+
+# UV 無ければ自動展開
+if not obj.data.uv_layers:
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.uv.smart_project()
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+# ---------- 3. マテリアル作成 ----------
+mat = bpy.data.materials.new("DirtyMetal")
+mat.use_nodes = True
+nodes, links = mat.node_tree.nodes, mat.node_tree.links
+bsdf = nodes.get("Principled BSDF")
+
+def add_tex_node(filename, is_srgb):
+    img = bpy.data.images.load(os.path.join(TEX_DIR, filename))
+    img.colorspace_settings.name = "sRGB" if is_srgb else "Non-Color"  # 色空間変更:contentReference[oaicite:5]{index=5}
+    node = nodes.new("ShaderNodeTexImage")
+    node.image = img
+    return node
+
+# Base Color / Roughness / Normal
+col  = add_tex_node("rusted_shutter_diff_4k.jpg", True)
+rough= add_tex_node("rusted_shutter_rough_4k.exr", False)
+norm = add_tex_node("rusted_shutter_nor_gl_4k.exr", False)
+
+links.new(col.outputs[0],  bsdf.inputs["Base Color"])
+links.new(rough.outputs[0],bsdf.inputs["Roughness"])
+
+nrm_node = nodes.new("ShaderNodeNormalMap")
+links.new(norm.outputs[0], nrm_node.inputs["Color"])
+links.new(nrm_node.outputs[0], bsdf.inputs["Normal"])
+
+# メッシュへ割当
+obj.data.materials.clear()
+obj.data.materials.append(mat)
+
+# ---------- 4. glTF (GLB) エクスポート ----------
+bpy.ops.export_scene.gltf(
+    filepath=OUT_GLTF,
+    export_format='GLB',          # バイナリ形式:contentReference[oaicite:6]{index=6}
+    export_selected=True,         # 選択オブジェクトのみ
+    export_apply=True             # 変換後トランスフォーム適用
+)
+
+print(f"GLB written → {OUT_GLTF}")

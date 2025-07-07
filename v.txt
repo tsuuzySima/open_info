@@ -1,0 +1,19 @@
+import numpy as np
+import trimesh, pyrender
+
+# ① glTF/GLB 読み込み  ── trimesh がシーン or メッシュを返す
+tm_scene = trimesh.load('model.glb')      # .gltf でも同様
+mesh = pyrender.Mesh.from_trimesh(
+    tm_scene.geometry[list(tm_scene.geometry.keys())[0]]
+)
+
+# ② シーンに配置
+scene = pyrender.Scene()
+scene.add(mesh)
+
+# ③ カメラとレンダリング
+cam = pyrender.PerspectiveCamera(yfov=np.pi/3)
+scene.add(cam, pose=np.eye(4))
+r = pyrender.OffscreenRenderer(800, 600)
+color, depth = r.render(scene)
+r.delete()
