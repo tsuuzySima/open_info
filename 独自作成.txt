@@ -1,0 +1,136 @@
+# ================================================================
+#  OBJ を読み込み、各オブジェクトにプロシージャル金属マテリアルを自動生成し
+#  glTF (GLB) 形式で保存するワンショットスクリプト
+#  Blender 4.x / Cycles & Eevee 両対応
+# ================================================================
+import bpy, os, random
+
+# ------------------------------------------------
+# 0) パス設定（この .py と同じディレクトリに置く想定）
+# ------------------------------------------------
+BASE_DIR   = os.path.dirname(bpy.data.filepath) or os.getcwd()
+OBJ_PATH   = os.path.join(BASE_DIR, "test.obj")     # 読み込む OBJ
+GLB_OUTPUT = os.path.join(BASE_DIR, "test_auto.glb")# 書き出す GLB
+
+# ------------------------------------------------
+# 1) シーン初期化
+# ------------------------------------------------
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+# ------------------------------------------------
+# 2) OBJ インポート
+# ------------------------------------------------
+bpy.ops.wm.obj_import(filepath=OBJ_PATH)
+objs = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+
+# ------------------------------------------------
+# 3) プロシージャル“汚れ金属”マテリアルの自動生成
+#    ─ 各オブジェクトに一つずつ割り当て
+# ------------------------------------------------
+def make_procedural_metal(name_seed="AutoMat"):
+    """Noise と Musgrave を組み合わせた汚れ金属マテリアルを返す"""
+    mat = bpy.data.materials.new(name_seed)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+    nodes.clear()
+
+    out  = nodes.new("ShaderNodeOutputMaterial")
+    outh = out.height
+
+    # Principled BSDF
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (-200, 0)
+    bsdf.inputs["Metallic"].default_value  = 1.0
+    bsdf.inputs["Roughness"].default_value = 0.4
+
+    # 色合いをランダムに
+    hue = random.random()
+    sat = 0.1 + random.random()*0.2
+    val = 0.5 + random.random()*0.4
+    bsdf.inputs["Base Color"].default_value = (
+        *(bpy.types.ColorManagementDisplaySettings.convert_rgb_to_scene_linear(
+            (hue, sat, val))), 1.0)
+
+    # Musgrave で錆びマスク
+    mus = nodes.new("ShaderNodeTexMusgrave")
+    mus.location = (-600, 200)
+    mus.inputs["Scale"].default_value      = 8
+    mus.inputs["Detail"].default_value     = 5
+    mus.inputs["Dimension"].default_value  = 0.7
+
+    ramp = nodes.new("ShaderNodeValToRGB")
+    ramp.location = (-400, 200)
+    ramp.color_ramp.elements[1].position = 0.35
+
+    # ノイズで細かな汚れ
+    noise = nodes.new("ShaderNodeTexNoise")
+    noise.location = (-600, -50)
+    noise.inputs["Scale"].default_value = 50
+    noise.inputs["Detail"].default_value = 6
+
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (-200, -50)
+    bump.inputs["Strength"].default_value = 0.3
+
+    # 曲率でエッジ摩耗
+    geom = nodes.new("ShaderNodeNewGeometry")
+    geom.location = (-600, -300)
+
+    pramp = nodes.new("ShaderNodeValToRGB")
+    pramp.location = (-400, -300)
+    pramp.color_ramp.elements[0].position = 0.6
+    pramp.color_ramp.elements[1].position = 0.9
+
+    mix = nodes.new("ShaderNodeMixShader")
+    mix.location = (0, 200)
+
+    rust_bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    rust_bsdf.location = (-100, 400)
+    rust_bsdf.inputs["Base Color"].default_value = (0.16, 0.06, 0.02, 1)
+    rust_bsdf.inputs["Roughness"].default_value  = 0.9
+
+    # 接続
+    links.new(mus.outputs["Fac"], ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"], mix.inputs["Fac"])
+    links.new(noise.outputs["Fac"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    links.new(bsdf.outputs["BSDF"], mix.inputs[2])
+    links.new(rust_bsdf.outputs["BSDF"], mix.inputs[1])
+    links.new(mix.outputs["Shader"], out.inputs["Surface"])
+
+    # エッジ摩耗でベースカラー補正
+    links.new(geom.outputs["Pointiness"], pramp.inputs[0])
+    links.new(pramp.outputs["Color"], bsdf.inputs["Base Color"])
+
+    return mat
+
+# 各オブジェクトへマテリアル割当
+for obj in objs:
+    # UV が無ければ自動展開
+    if not obj.data.uv_layers:
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.uv.smart_project()
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    mat = make_procedural_metal(f"AutoMat_{obj.name}")
+    obj.data.materials.clear()
+    obj.data.materials.append(mat)
+
+# ------------------------------------------------
+# 4) glTF (GLB) 形式で書き出し
+# ------------------------------------------------
+bpy.ops.object.select_all(action='DESELECT')
+for o in objs:
+    o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+
+bpy.ops.export_scene.gltf(
+    filepath        = GLB_OUTPUT,
+    export_format   = 'GLB',
+    export_selected = True,
+    export_apply    = True
+)
+
+print(f"[INFO] GLB exported to {GLB_OUTPUT}")
