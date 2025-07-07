@@ -1,48 +1,93 @@
-# 既存 material を残したまま各スロットを置き換える
+# ---------------------------------------------------------------
+#  Rusted-Shutter PBR を test.obj の全マテリアルへ適用し、GLB に書き出す
+#  ??? 主要 API 出典:
+#      ? glTF エクスポート bpy.ops.export_scene.gltf【glTF API】 :contentReference[oaicite:0]{index=0}
+#      ? OBJ インポート (Blender 4.x 以降は bpy.ops.wm.obj_import)【StackOverflow】 :contentReference[oaicite:1]{index=1}
+#      ? 画像ノードの色空間変更 colorspace_settings.name【Blender SE】 :contentReference[oaicite:2]{index=2}
+#      ? Smart UV Project の Python 呼び出し【Blender API UV】 :contentReference[oaicite:3]{index=3}
+#      ? NormalMap ノードの扱い【Blender API】 :contentReference[oaicite:4]{index=4}
+#      ? export_selected オプションの使い方【Blender SE】 :contentReference[oaicite:5]{index=5}
+#      ? Principled BSDF 入力の取得例【Blender SE】 :contentReference[oaicite:6]{index=6}
+#      ? 既存ノード一括削除テクニック【Blender Artists】 :contentReference[oaicite:7]{index=7}
+#      ? 選択オブジェクトのみ GLTF 出力実例【Blender SE】 :contentReference[oaicite:8]{index=8}
+#      ? 複数オブジェクト Smart UV の参考【Blender SE】 :contentReference[oaicite:9]{index=9}
+# ---------------------------------------------------------------
+
+import bpy, os
+
+# === パス設定（このスクリプトと同じフォルダにファイルを置く想定） ===========
+BASE_DIR   = os.path.dirname(bpy.data.filepath) or os.getcwd()
+OBJ_PATH   = os.path.join(BASE_DIR, "test.obj")
+TEX_DIFF   = os.path.join(BASE_DIR, "rusted_shutter_diff_4k.jpg")
+TEX_ROUGH  = os.path.join(BASE_DIR, "rusted_shutter_rough_4k.exr")
+TEX_NORM   = os.path.join(BASE_DIR, "rusted_shutter_nor_gl_4k.exr")
+GLB_OUTPUT = os.path.join(BASE_DIR, "test_dirty.glb")
+
+# === 0) 初期化 --------------------------------------------------
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+# === 1) OBJ インポート（Blender 4.x 以降） ---------------------
+bpy.ops.wm.obj_import(filepath=OBJ_PATH)   # :contentReference[oaicite:10]{index=10}
+obj = bpy.context.selected_objects[0]
+
+# === 2) UV 展開が無ければ Smart UV Project ----------------------
+if not obj.data.uv_layers:
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.uv.smart_project()            # :contentReference[oaicite:11]{index=11}
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+# === 3) マテリアルを走査して Rusted-Shutter を適用 -------------
 for mat in obj.data.materials:
+    if mat is None:
+        continue
     mat.use_nodes = True
-    nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    # 既存ノード除去（必要なら）
+    nt     = mat.node_tree
+    nodes  = nt.nodes
+    links  = nt.links
+
+    # (a) Material Output を残して他ノードを削除 ---------------   # :contentReference[oaicite:12]{index=12}
+    output = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL'), None)
     for n in list(nodes):
-        if n.type not in {'OUTPUT_MATERIAL'}:
+        if n != output:
             nodes.remove(n)
-    bsdf = nodes.get("Principled BSDF") or nodes.new("ShaderNodeBsdfPrincipled")
 
-    # ファイル名をマテリアル名で分岐
-    # ── texture_a → diff/rough/nor を貼る …のようにマッピング
-    if mat.name == "texture_a":
-        base_file = "rusted_shutter_diff_4k.jpg"
-        rough_file = "rusted_shutter_rough_4k.exr"
-        nor_file  = "rusted_shutter_nor_gl_4k.exr"
-    elif mat.name == "texture_b":
-        ...
-    elif mat.name == "texture_c":
-        ...
-    else:
-        continue  # 想定外はスキップ
+    # (b) Principled BSDF を新規または取得 ----------------------   # :contentReference[oaicite:13]{index=13}
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (-200, 0)
+    links.new(bsdf.outputs[0], output.inputs[0])
 
-    # 色空間設定＆リンク
-    def tex(path, is_srgb):
-        img = bpy.data.images.load(os.path.join(TEX_DIR, path))
-        img.colorspace_settings.name = "sRGB" if is_srgb else "Non-Color"
-        node = nodes.new("ShaderNodeTexImage")
-        node.image = img
-        return node
+    # (c) テクスチャノード生成ヘルパ ----------------------------
+    def make_tex(path, is_srgb, loc):
+        img = bpy.data.images.load(path)
+        img.colorspace_settings.name = "sRGB" if is_srgb else "Non-Color"  # :contentReference[oaicite:14]{index=14}
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = img
+        tex.location = loc
+        return tex
 
-    col  = tex(base_file,  True)
-    rough= tex(rough_file, False)
-    norm = tex(nor_file,  False)
+    tex_diff  = make_tex(TEX_DIFF,  True,  (-600,  200))
+    tex_rough = make_tex(TEX_ROUGH, False, (-600,    0))
+    tex_norm  = make_tex(TEX_NORM,  False, (-600, -200))
 
-    nrm_node = nodes.new("ShaderNodeNormalMap")
-    links.new(col.outputs[0],  bsdf.inputs["Base Color"])
-    links.new(rough.outputs[0],bsdf.inputs["Roughness"])
-    links.new(norm.outputs[0], nrm_node.inputs["Color"])
-    links.new(nrm_node.outputs[0], bsdf.inputs["Normal"])
+    links.new(tex_diff.outputs['Color'],  bsdf.inputs['Base Color'])
+    links.new(tex_rough.outputs['Color'], bsdf.inputs['Roughness'])
 
-# そのまま glTF エクスポート
+    # (d) NormalMap ノード接続 -----------------------------------  # :contentReference[oaicite:15]{index=15}
+    nrm = nodes.new("ShaderNodeNormalMap")
+    nrm.location = (-400, -200)
+    links.new(tex_norm.outputs['Color'], nrm.inputs['Color'])
+    links.new(nrm.outputs['Normal'],     bsdf.inputs['Normal'])
+
+# === 4) GLB 書き出し (選択オブジェクトのみ) --------------------   # :contentReference[oaicite:16]{index=16}
+bpy.ops.object.select_all(action='DESELECT')
+obj.select_set(True)
+bpy.context.view_layer.objects.active = obj
+
 bpy.ops.export_scene.gltf(
-    filepath=OUT_GLTF,
-    export_format='GLB',
-    export_selected=True,
-    export_apply=True
+    filepath        = GLB_OUTPUT,
+    export_format   = 'GLB',
+    export_selected = True,   # :contentReference[oaicite:17]{index=17}
+    export_apply    = True
 )
+
+print(f"[INFO] GLB exported → {GLB_OUTPUT}")
